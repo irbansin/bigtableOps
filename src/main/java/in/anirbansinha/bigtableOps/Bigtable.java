@@ -12,7 +12,6 @@ import com.google.cloud.bigtable.data.v2.models.Mutation;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
-import com.google.protobuf.ByteString;
 
 import io.github.cdimascio.dotenv.Dotenv;
 
