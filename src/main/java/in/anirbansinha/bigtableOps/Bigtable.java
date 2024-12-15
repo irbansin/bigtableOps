@@ -13,6 +13,8 @@ import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
 
+import io.github.cdimascio.dotenv.Dotenv;
+
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
@@ -23,11 +25,13 @@ import java.util.ArrayList;
  */
 public class Bigtable {
 
+    Dotenv dotenv = Dotenv.load();
+
     // TODO: Fill in information for your database
-    public final String projectId = "lateral-vision-438701-u5";
-    public final String instanceId = "g23ai2084";
-    public final String COLUMN_FAMILY = "sensor";
-    public final String tableId = "weather"; 
+    public final String projectId = dotenv.get("PROJECT_ID");
+    public final String instanceId = dotenv.get("INSTANCE_ID");
+    public final String COLUMN_FAMILY = dotenv.get("COLUMN_FAMILY");
+    public final String tableId = dotenv.get("TABLE_ID"); 
 
     private BigtableDataClient dataClient;
     private BigtableTableAdminClient adminClient;
