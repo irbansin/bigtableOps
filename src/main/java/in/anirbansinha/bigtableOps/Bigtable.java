@@ -27,7 +27,6 @@ public class Bigtable {
 
     Dotenv dotenv = Dotenv.load();
 
-    // TODO: Fill in information for your database
     public final String projectId = dotenv.get("PROJECT_ID");
     public final String instanceId = dotenv.get("INSTANCE_ID");
     public final String COLUMN_FAMILY = dotenv.get("COLUMN_FAMILY");
@@ -62,17 +61,15 @@ public class Bigtable {
     public void run() throws Exception {
         connect();
 
-        // TODO: Comment or uncomment these as you proceed. Once data is loaded, comment
-        // them out.
         // deleteTable();
-        createTable();
-        loadData();
+        // createTable();
+        // loadData();
 
-        int temp = query1();
-        System.out.println("Temperature: " + temp);
+        // int temp = query1();
+        // System.out.println("Temperature: " + temp);
 
-        int windspeed = query2();
-        System.out.println("Windspeed: " + windspeed);
+        // int windspeed = query2();
+        // System.out.println("Windspeed: " + windspeed);
 
         ArrayList<Object[]> data = query3();
         StringBuilder buf = new StringBuilder();
@@ -84,8 +81,8 @@ public class Bigtable {
         }
         System.out.println(buf.toString());
 
-        temp = query4();
-        System.out.println("Temperature: " + temp);
+        // int temp = query4();
+        // System.out.println("Temperature: " + temp);
 
         close();
     }
@@ -194,11 +191,11 @@ public class Bigtable {
                         bulkMutation.add(
                                 rowKey,
                                 Mutation.create()
-                                        .setCell(COLUMN_FAMILY, "temperature", temperature)
-                                        .setCell(COLUMN_FAMILY, "dew_point", dewPoint)
-                                        .setCell(COLUMN_FAMILY, "humidity", humidity)
-                                        .setCell(COLUMN_FAMILY, "wind_speed", windSpeed)
-                                        .setCell(COLUMN_FAMILY, "pressure", pressure));
+                                        .setCell(COLUMN_FAMILY, "temperature", String.valueOf(temperature))
+                                        .setCell(COLUMN_FAMILY, "dew_point", String.valueOf(dewPoint))
+                                        .setCell(COLUMN_FAMILY, "humidity", String.valueOf(humidity))
+                                        .setCell(COLUMN_FAMILY, "wind_speed", String.valueOf(windSpeed))
+                                        .setCell(COLUMN_FAMILY, "pressure", String.valueOf(pressure)));
                     } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
                         System.err.println("Skipping line " + lineNumber + " due to parsing error: " + line);
                         continue;
@@ -223,16 +220,116 @@ public class Bigtable {
      * @return The parsed integer value, or Integer.MIN_VALUE if the value is missing
      */
     private int parseFieldWithMissing(String value, String fieldName, int lineNumber) {
-        if (value.equals("M")) {
+        if (value == null) {
+            System.err.println("Invalid " + fieldName + " value: null at line " + lineNumber);
             return Integer.MIN_VALUE;
         }
-        try {
-            if (value.contains(".")) {
-                return (int) Math.round(Double.parseDouble(value));
+
+        // First clean the value by removing any leading/trailing whitespace
+        value = value.trim();
+        
+        // Handle special cases for missing data
+        if (value.isEmpty() || value.equals("M") || value.matches("[;=?@B]")) {
+            if (value.matches("[;=?@B]")) {
+                System.err.println("Special character found in " + fieldName + " value: '" + value + "' at line " + lineNumber);
+            } else {
+                System.err.println("Missing " + fieldName + " value: " + (value.isEmpty() ? "empty" : value) + " at line " + lineNumber);
             }
-            return Integer.parseInt(value);
+            return Integer.MIN_VALUE;
+        }
+
+        // Special handling for temperature values
+        if (fieldName.equals("temperature")) {
+            // Remove any non-numeric characters except decimal point, minus sign, and common temperature indicators
+            String cleanedValue = value.replaceAll("[^0-9.\\-°CFcf]", "").trim().toLowerCase();
+            
+            // Handle Fahrenheit values (if present)
+            if (cleanedValue.contains("f")) {
+                cleanedValue = cleanedValue.replace("f", "");
+                try {
+                    double fahrenheit = Double.parseDouble(cleanedValue);
+                    // Convert Fahrenheit to Celsius
+                    double celsius = (fahrenheit - 32) * 5 / 9;
+                    System.out.println("Converted temperature from " + fahrenheit + "°F to " + celsius + "°C at line " + lineNumber);
+                    return (int) Math.round(celsius);
+                } catch (NumberFormatException e) {
+                    System.err.println("Failed to parse Fahrenheit temperature: '" + value + "' at line " + lineNumber);
+                    return Integer.MIN_VALUE;
+                }
+            }
+            
+            // Remove Celsius indicator if present
+            cleanedValue = cleanedValue.replace("c", "").replace("°", "");
+            
+            // Handle multiple decimal points or minus signs
+            if (cleanedValue.indexOf('.') != cleanedValue.lastIndexOf('.') ||
+                cleanedValue.indexOf('-') != cleanedValue.lastIndexOf('-') ||
+                (cleanedValue.contains("-") && cleanedValue.indexOf("-") > 0)) {
+                System.err.println("Multiple decimal points or misplaced minus in temperature: '" + value + "' at line " + lineNumber);
+                return Integer.MIN_VALUE;
+            }
+            
+            try {
+                double temperature = cleanedValue.contains(".") ? 
+                    Double.parseDouble(cleanedValue) : Integer.parseInt(cleanedValue);
+                
+                // Validate temperature range (-100°C to 60°C for more realistic range)
+                if (temperature < -100 || temperature > 60) {
+                    System.err.println("Temperature out of realistic range [-100°C,60°C]: " + temperature + "°C at line " + lineNumber);
+                    return Integer.MIN_VALUE;
+                }
+                
+                return (int) Math.round(temperature);
+            } catch (NumberFormatException e) {
+                System.err.println("Failed to parse temperature: original='" + value + "', cleaned='" + cleanedValue + "' at line " + lineNumber);
+                return Integer.MIN_VALUE;
+            }
+        }
+        
+        // Handle other non-temperature fields
+        String cleanedValue = value.replaceAll("[^0-9.\\-]", "").trim();
+        
+        if (cleanedValue.isEmpty()) {
+            System.err.println("Value became empty after cleaning: original='" + value + "' for " + fieldName + " at line " + lineNumber);
+            return Integer.MIN_VALUE;
+        }
+
+        if (cleanedValue.indexOf('.') != cleanedValue.lastIndexOf('.') ||
+            cleanedValue.indexOf('-') != cleanedValue.lastIndexOf('-') ||
+            (cleanedValue.contains("-") && cleanedValue.indexOf("-") > 0)) {
+            System.err.println("Multiple decimal points or misplaced minus in " + fieldName + ": '" + value + "' at line " + lineNumber);
+            return Integer.MIN_VALUE;
+        }
+        
+        try {
+            double numericValue;
+            if (cleanedValue.contains(".")) {
+                numericValue = Double.parseDouble(cleanedValue);
+            } else {
+                numericValue = Integer.parseInt(cleanedValue);
+            }
+
+            // Check for reasonable value ranges for other fields
+            if (fieldName.equals("wind_speed")) {
+                if (numericValue < 0 || numericValue > 200) {
+                    System.err.println("Wind speed out of range [0,200]: " + numericValue + " at line " + lineNumber);
+                    return Integer.MIN_VALUE;
+                }
+            } else if (fieldName.equals("humidity")) {
+                if (numericValue < 0 || numericValue > 100) {
+                    System.err.println("Humidity out of range [0,100]: " + numericValue + " at line " + lineNumber);
+                    return Integer.MIN_VALUE;
+                }
+            } else if (fieldName.equals("pressure")) {
+                if (numericValue < 800 || numericValue > 1100) {
+                    System.err.println("Pressure out of range [800,1100]: " + numericValue + " at line " + lineNumber);
+                    return Integer.MIN_VALUE;
+                }
+            }
+
+            return (int) Math.round(numericValue);
         } catch (NumberFormatException e) {
-            System.err.println("Invalid " + fieldName + " value at line " + lineNumber + ": " + value);
+            System.err.println("Failed to parse " + fieldName + ": original='" + value + "', cleaned='" + cleanedValue + "' at line " + lineNumber);
             return Integer.MIN_VALUE;
         }
     }
@@ -262,11 +359,10 @@ public class Bigtable {
 
             // Extract the "temperature" cell value from the row
             for (RowCell cell : row.getCells(COLUMN_FAMILY, "temperature")) {
-                String valueStr = cell.getValue().toStringUtf8().trim();
                 try {
-                    return Integer.parseInt(valueStr);
+                    return Integer.parseInt(cell.getValue().toStringUtf8().trim());
                 } catch (NumberFormatException e) {
-                    System.err.println("Invalid temperature value: " + valueStr);
+                    System.err.println("Invalid temperature value: " + cell.getValue().toStringUtf8().trim() + " in row: " + row.getKey().toStringUtf8());
                     return -1;
                 }
             }
@@ -302,15 +398,14 @@ public class Bigtable {
             for (Row row : rows) {
                 // Get the wind speed value from the row
                 for (RowCell cell : row.getCells(COLUMN_FAMILY, "wind_speed")) {
-                    String valueStr = cell.getValue().toStringUtf8().trim();
                     try {
-                        int windSpeed = Integer.parseInt(valueStr);
+                        int windSpeed = Integer.parseInt(cell.getValue().toStringUtf8().trim());
                         // Update the maximum wind speed
                         if (windSpeed > maxWindSpeed) {
                             maxWindSpeed = windSpeed;
                         }
                     } catch (NumberFormatException e) {
-                        System.err.println("Invalid wind speed value: " + valueStr);
+                        System.err.println("Invalid wind speed value: " + cell.getValue().toStringUtf8().trim() + " in row: " + row.getKey().toStringUtf8());
                         continue;  // Skip this invalid value and continue with next
                     }
                 }
@@ -388,7 +483,7 @@ public class Bigtable {
                                 System.err.println("Unexpected column qualifier: " + qualifier);
                         }
                     } catch (NumberFormatException e) {
-                        System.err.println("Invalid value for " + qualifier + ": " + valueStr);
+                        System.err.println("Invalid value for " + qualifier + ": " + valueStr + " in row: " + row.getKey().toStringUtf8());
                         // Skip this invalid value but continue processing other fields
                         continue;
                     }
@@ -435,15 +530,14 @@ public class Bigtable {
             for (Row row : rows) {
                 // Extract the temperature from each row
                 for (RowCell cell : row.getCells(COLUMN_FAMILY, "temperature")) {
-                    String valueStr = cell.getValue().toStringUtf8().trim();
                     try {
-                        int temperature = Integer.parseInt(valueStr);
+                        int temperature = Integer.parseInt(cell.getValue().toStringUtf8().trim());
                         // Update the maximum temperature
                         if (temperature > maxTemperature) {
                             maxTemperature = temperature;
                         }
                     } catch (NumberFormatException e) {
-                        System.err.println("Invalid temperature value: " + valueStr + " in row: " + row.getKey().toStringUtf8());
+                        System.err.println("Invalid temperature value: " + cell.getValue().toStringUtf8().trim() + " in row: " + row.getKey().toStringUtf8());
                         continue;  // Skip this invalid value and continue with next
                     }
                 }
