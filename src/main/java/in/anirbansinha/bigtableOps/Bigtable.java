@@ -12,6 +12,7 @@ import com.google.cloud.bigtable.data.v2.models.Mutation;
 import com.google.cloud.bigtable.data.v2.models.Query;
 import com.google.cloud.bigtable.data.v2.models.Row;
 import com.google.cloud.bigtable.data.v2.models.RowCell;
+import com.google.protobuf.ByteString;
 
 import io.github.cdimascio.dotenv.Dotenv;
 
@@ -130,7 +131,7 @@ public class Bigtable {
      */
     public void loadData() throws Exception {
         String path = "data/";
-        String[] stationIds = { "Pseudo-Julian-Date","Date","Time","Temperature","Dewpoint","Relhum","Speed","Gust","Pressure" }; // Station IDs for SeaTac, Vancouver, Portland
+        String[] stationIds = { "SEA", "YVR", "PDX" }; // Station IDs for SeaTac, Vancouver, Portland
         String[] fileNames = { "seatac.csv", "vancouver.csv", "portland.csv" }; // CSV filenames
 
         try {
@@ -149,38 +150,60 @@ public class Bigtable {
                 while ((line = reader.readLine()) != null) {
                     lineNumber++;
 
-                    // Skip header row
-                    if (lineNumber == 1) {
+                    // Skip header rows (both the first and second line)
+                    if (lineNumber <= 2) {
+                        if (lineNumber == 1) {
+                            System.out.println("Skipping first header row: " + line);
+                        } else {
+                            System.out.println("Skipping second header row: " + line);
+                        }
                         continue;
                     }
 
                     // Parse the CSV data
                     String[] fields = line.split(",");
-                    if (fields.length < 7) {
-                        System.err.println("Skipping malformed line: " + line);
+                    if (fields.length < 9) {  
+                        System.err.println("Skipping malformed line " + lineNumber + ": " + line);
                         continue;
                     }
 
-                    String date = fields[0];
-                    String hour = fields[1];
-                    int temperature = Integer.parseInt(fields[2]);
-                    int dewPoint = Integer.parseInt(fields[3]);
-                    int humidity = Integer.parseInt(fields[4]);
-                    int windSpeed = Integer.parseInt(fields[5]);
-                    int pressure = Integer.parseInt(fields[6]);
+                    try {
+                        // Skip Julian Date (fields[0])
+                        String date = fields[1].trim();
+                        String timeStr = fields[2].trim();
+                        String hour = timeStr.split(":")[0];  
+                        
+                        // Parse numeric fields, handling 'M' for missing data
+                        int temperature = parseFieldWithMissing(fields[3].trim(), "temperature", lineNumber);
+                        int dewPoint = parseFieldWithMissing(fields[4].trim(), "dewpoint", lineNumber);
+                        int humidity = parseFieldWithMissing(fields[5].trim(), "humidity", lineNumber);
+                        int windSpeed = parseFieldWithMissing(fields[6].trim(), "wind speed", lineNumber);
+                        int pressure = parseFieldWithMissing(fields[8].trim(), "pressure", lineNumber);
 
-                    // Use the station ID, date, and hour to create a unique row key
-                    String rowKey = stationId + "#" + date + "#" + hour;
+                        // Skip if any essential data is missing
+                        if (temperature == Integer.MIN_VALUE || dewPoint == Integer.MIN_VALUE || 
+                            humidity == Integer.MIN_VALUE || windSpeed == Integer.MIN_VALUE || 
+                            pressure == Integer.MIN_VALUE) {
+                            System.out.println("Skipping line " + lineNumber + " due to missing data");
+                            continue;
+                        }
 
-                    // Add the mutation for the row
-                    bulkMutation.add(
-                            rowKey,
-                            Mutation.create()
-                                    .setCell(COLUMN_FAMILY, "temperature", temperature)
-                                    .setCell(COLUMN_FAMILY, "dew_point", dewPoint)
-                                    .setCell(COLUMN_FAMILY, "humidity", humidity)
-                                    .setCell(COLUMN_FAMILY, "wind_speed", windSpeed)
-                                    .setCell(COLUMN_FAMILY, "pressure", pressure));
+                        // Use the station ID, date, and hour to create a unique row key
+                        String rowKey = stationId + "#" + date + "#" + hour;
+
+                        // Add the mutation for the row
+                        bulkMutation.add(
+                                rowKey,
+                                Mutation.create()
+                                        .setCell(COLUMN_FAMILY, "temperature", temperature)
+                                        .setCell(COLUMN_FAMILY, "dew_point", dewPoint)
+                                        .setCell(COLUMN_FAMILY, "humidity", humidity)
+                                        .setCell(COLUMN_FAMILY, "wind_speed", windSpeed)
+                                        .setCell(COLUMN_FAMILY, "pressure", pressure));
+                    } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
+                        System.err.println("Skipping line " + lineNumber + " due to parsing error: " + line);
+                        continue;
+                    }
                 }
 
                 // Apply the bulk mutation to Bigtable
@@ -190,6 +213,28 @@ public class Bigtable {
             }
         } catch (IOException e) {
             throw new Exception("Error reading or loading data: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Parse a field that might contain 'M' for missing data.
+     * @param value The string value to parse
+     * @param fieldName The name of the field (for logging)
+     * @param lineNumber The current line number (for logging)
+     * @return The parsed integer value, or Integer.MIN_VALUE if the value is missing
+     */
+    private int parseFieldWithMissing(String value, String fieldName, int lineNumber) {
+        if (value.equals("M")) {
+            return Integer.MIN_VALUE;
+        }
+        try {
+            if (value.contains(".")) {
+                return (int) Math.round(Double.parseDouble(value));
+            }
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            System.err.println("Invalid " + fieldName + " value at line " + lineNumber + ": " + value);
+            return Integer.MIN_VALUE;
         }
     }
 
@@ -218,7 +263,13 @@ public class Bigtable {
 
             // Extract the "temperature" cell value from the row
             for (RowCell cell : row.getCells(COLUMN_FAMILY, "temperature")) {
-                return Integer.parseInt(cell.getValue().toStringUtf8());
+                String valueStr = cell.getValue().toStringUtf8().trim();
+                try {
+                    return Integer.parseInt(valueStr);
+                } catch (NumberFormatException e) {
+                    System.err.println("Invalid temperature value: " + valueStr);
+                    return -1;
+                }
             }
 
             System.out.println("Temperature cell not found in the row.");
@@ -252,10 +303,16 @@ public class Bigtable {
             for (Row row : rows) {
                 // Get the wind speed value from the row
                 for (RowCell cell : row.getCells(COLUMN_FAMILY, "wind_speed")) {
-                    int windSpeed = Integer.parseInt(cell.getValue().toStringUtf8());
-                    // Update the maximum wind speed
-                    if (windSpeed > maxWindSpeed) {
-                        maxWindSpeed = windSpeed;
+                    String valueStr = cell.getValue().toStringUtf8().trim();
+                    try {
+                        int windSpeed = Integer.parseInt(valueStr);
+                        // Update the maximum wind speed
+                        if (windSpeed > maxWindSpeed) {
+                            maxWindSpeed = windSpeed;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.err.println("Invalid wind speed value: " + valueStr);
+                        continue;  // Skip this invalid value and continue with next
                     }
                 }
             }
@@ -308,31 +365,44 @@ public class Bigtable {
                 // Retrieve sensor readings from the row
                 for (RowCell cell : row.getCells(COLUMN_FAMILY)) {
                     String qualifier = cell.getQualifier().toStringUtf8();
-                    int value = Integer.parseInt(cell.getValue().toStringUtf8());
-    
-                    switch (qualifier) {
-                        case "temperature":
-                            temperature = value;
-                            break;
-                        case "dew_point":
-                            dewPoint = value;
-                            break;
-                        case "humidity":
-                            humidity = value;
-                            break;
-                        case "wind_speed":
-                            windSpeed = value;
-                            break;
-                        case "pressure":
-                            pressure = value;
-                            break;
-                        default:
-                            System.err.println("Unexpected column qualifier: " + qualifier);
+                    String valueStr = cell.getValue().toStringUtf8().trim();
+                    
+                    try {
+                        int value = Integer.parseInt(valueStr);
+                        switch (qualifier) {
+                            case "temperature":
+                                temperature = value;
+                                break;
+                            case "dew_point":
+                                dewPoint = value;
+                                break;
+                            case "humidity":
+                                humidity = value;
+                                break;
+                            case "wind_speed":
+                                windSpeed = value;
+                                break;
+                            case "pressure":
+                                pressure = value;
+                                break;
+                            default:
+                                System.err.println("Unexpected column qualifier: " + qualifier);
+                        }
+                    } catch (NumberFormatException e) {
+                        System.err.println("Invalid value for " + qualifier + ": " + valueStr);
+                        // Skip this invalid value but continue processing other fields
+                        continue;
                     }
                 }
     
-                // Add the row's data as an object array to the list
-                data.add(new Object[] { date, hour, temperature, dewPoint, humidity, windSpeed, pressure });
+                // Only add the row's data if we have valid values for all fields
+                if (temperature != 0 || dewPoint != 0 || humidity != 0 || windSpeed != 0 || pressure != 0) {
+                    data.add(new Object[] { date, hour, temperature, dewPoint, 
+                                          String.valueOf(humidity), String.valueOf(windSpeed), 
+                                          String.valueOf(pressure) });
+                } else {
+                    System.out.println("Skipping row with no valid data for key: " + row.getKey().toStringUtf8());
+                }
             }
     
             System.out.println("Readings for SeaTac on " + date + " retrieved successfully.");
@@ -366,12 +436,23 @@ public class Bigtable {
             for (Row row : rows) {
                 // Extract the temperature from each row
                 for (RowCell cell : row.getCells(COLUMN_FAMILY, "temperature")) {
-                    int temperature = Integer.parseInt(cell.getValue().toStringUtf8());
-                    // Update the maximum temperature
-                    if (temperature > maxTemperature) {
-                        maxTemperature = temperature;
+                    String valueStr = cell.getValue().toStringUtf8().trim();
+                    try {
+                        int temperature = Integer.parseInt(valueStr);
+                        // Update the maximum temperature
+                        if (temperature > maxTemperature) {
+                            maxTemperature = temperature;
+                        }
+                    } catch (NumberFormatException e) {
+                        System.err.println("Invalid temperature value: " + valueStr + " in row: " + row.getKey().toStringUtf8());
+                        continue;  // Skip this invalid value and continue with next
                     }
                 }
+            }
+    
+            if (maxTemperature == Integer.MIN_VALUE) {
+                System.out.println("No valid temperature readings found in summer 2022");
+                return -1;
             }
     
             System.out.println("Highest temperature in summer 2022: " + maxTemperature);
